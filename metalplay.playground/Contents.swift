@@ -10,7 +10,7 @@ import PlaygroundSupport
 renderPipeline(fragmentShader: "background_color")
 
 func renderPipeline(fragmentShader: String = "constant_color",
-                    backgroundColor: NSColor = NSColor.lightGray) {
+                    backgroundColor: NSColor = NSColor.cyan) {
     // get the device
     let device = MTLCreateSystemDefaultDevice()!
 
