@@ -9,7 +9,7 @@ import PlaygroundSupport
 var options = Options()
 //options.transform = { t in CGAffineTransform(scaleX: 1.0 - CGFloat(t), y: 1)}
 
-//options.fragmentShader = "constant_color"
+options.cornerRadius = { t in Float(200.0 * t)}
 options.shaderCode = """
 fragment half4 constant_color() {
     return half4(0.95, 0.9, 0.1, 1.0);
@@ -67,14 +67,14 @@ func render(_ options: Options = Options()) {
         };
 
         vertex RasterizerData copy_vertex(
-            const device packed_float2* vertex_array [[buffer(0)]],
+            const device packed_float4* vertex_array [[buffer(0)]],
                                      unsigned int vid [[vertex_id]]) {
 
             RasterizerData out;
-            const float2 where = vertex_array[vid];
-            out.position = float4(where, 0.0, 1.0);
-            out.textureCoordinate = float2(0.5 - 0.5 * where.x,
-                                           0.5 - 0.5 * where.y);
+            const float4 where = vertex_array[vid];
+            out.position = float4(where[0], where[1], 0.0, 1.0);
+            out.textureCoordinate = float2(0.5 + 0.5 * where[2],
+                                           0.5 - 0.5 * where[3]);
             return out;
         }
 
@@ -102,19 +102,19 @@ func render(_ options: Options = Options()) {
             
             // return background color when close enough to corners
             float2 p = in.textureCoordinate;
-            if((p.x < 0.1 && p.y < 0.1) || (p.x < 0.1 && p.y > 0.9) ||
-               (p.x > 0.9 && p.y > 0.9) || (p.x > 0.9 && p.y < 0.1)) {
-                if(min(min(distance(float2(0.1, 0.1), in.textureCoordinate),
-                           distance(float2(0.1, 0.9), in.textureCoordinate)),
-                       min(distance(float2(0.9, 0.1), in.textureCoordinate),
-                           distance(float2(0.9, 0.9), in.textureCoordinate))) >= 0.05) {
+            float r = cornerRadius;
+            float s = 1.0 - r;
+            if((p.x < r && p.y < r) || (p.x < r && p.y > s) ||
+               (p.x > s && p.y > s) || (p.x > s && p.y < r)) {
+                if(min(min(distance(float2(r, r), p), distance(float2(r, s), p)),
+                       min(distance(float2(s, r), p), distance(float2(s, s), p))) >= r) {
                   return half4(backgroundColor);
                 }
             }
 
             constexpr sampler textureSampler (mag_filter::linear,
                                               min_filter::linear);
-            const half4 colorSample = colorTexture.sample(textureSampler, in.textureCoordinate);
+            const half4 colorSample = colorTexture.sample(textureSampler, p);
             return colorSample;
         }
 
@@ -133,7 +133,8 @@ func render(_ options: Options = Options()) {
     // create an NSView, with a metal layer as its backing layer.
     let metalLayer = CAMetalLayer()
     metalLayer.device = device
-    let view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 400))
+    let viewLength = CGFloat(400)
+    let view = NSView(frame: NSRect(x: 0, y: 0, width: viewLength, height: viewLength))
     view.layer = metalLayer
     PlaygroundPage.current.liveView = view
 
@@ -159,13 +160,13 @@ func render(_ options: Options = Options()) {
     
     func renderPass(color: NSColor, transform: CGAffineTransform, radius: Float) {
         // calculate geometry
-        let upperRight = CGPoint(x: 0.9, y: 0.9).applying(transform)
-        let lowerLeft = CGPoint(x: -0.9, y: -0.9).applying(transform)
-        let upperLeft = CGPoint(x: -0.9, y: 0.9).applying(transform)
-        let lowerRight = CGPoint(x: 0.9, y: -0.9).applying(transform)
+        let upperRight = CGPoint(x: 1.0, y:  1.0)
+        let lowerLeft = CGPoint(x: -1.0, y: -1.0)
+        let upperLeft = CGPoint(x: -1.0, y:  1.0)
+        let lowerRight = CGPoint(x: 1.0, y: -1.0)
 
         let vertexData = [upperRight, lowerLeft, upperLeft,
-                          upperRight, lowerRight, lowerLeft].vertexData()
+                          upperRight, lowerRight, lowerLeft].vertexData(transform)
         let dataSize = vertexData.count * MemoryLayout.stride(ofValue: vertexData[0]) // use stride instead of size, as this properly reflects memory usage.
         let vertexArray = device.makeBuffer(bytes: vertexData, length: dataSize, options: [])
         
@@ -185,8 +186,8 @@ func render(_ options: Options = Options()) {
         encoder.setFragmentBytes(&fragmentColor, length: MemoryLayout.size(ofValue: fragmentColor),
                                  index: backgroundColorId)
         
-        // set corner radius
-        var cornerRadius = simd_float1(radius)
+        // set corner radius, where we cheat a little since size never changes
+        var cornerRadius = simd_float1(radius / Float(viewLength))
         encoder.setFragmentBytes(&cornerRadius, length: MemoryLayout.size(ofValue: cornerRadius),
                                  index: cornerRadiusId)
         
@@ -207,7 +208,7 @@ func render(_ options: Options = Options()) {
     
     // setup timer for animations
     var t = 0.0
-    let maxTime = 3.0
+    let maxTime = 2.0
     Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { timer in
         t += timer.timeInterval
         if t >= maxTime {
@@ -224,7 +225,15 @@ func always<T>(_ value: T) -> ((Double) -> T) {
 }
 
 extension Array where Array.Element == CGPoint  {
-    func vertexData() -> [Float] {
-        return [Float](map({ [Float($0.x), Float($0.y)] }).joined())
+    func vertexData(_ transform: CGAffineTransform) -> [Float] {
+        var result = [Float]()
+        for point in self {
+            let transformed = point.applying(transform)
+            result.append(Float(transformed.x))
+            result.append(Float(transformed.y))
+            result.append(Float(point.x))
+            result.append(Float(point.y))
+        }
+        return result
     }
 }
