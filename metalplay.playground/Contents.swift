@@ -7,10 +7,13 @@ import MetalKit
 import PlaygroundSupport
 
 
-renderPipeline(fragmentShader: "background_color")
+//renderPipeline(fragmentShader: "background_color")
+renderPipeline(fragmentShader: "background_color",
+               backgroundColor: { t in NSColor(calibratedRed: CGFloat(t), green: 0, blue: 1, alpha: 1) })
 
 func renderPipeline(fragmentShader: String = "constant_color",
-                    backgroundColor: NSColor = NSColor.cyan) {
+                    backgroundColor: @escaping ((Double) -> NSColor) = { _ in NSColor.cyan },
+                    image: NSImage? = nil) {
     // get the device
     let device = MTLCreateSystemDefaultDevice()!
 
@@ -114,36 +117,61 @@ func renderPipeline(fragmentShader: String = "constant_color",
 
     // prepare our command buffer and drawable
     let commandQueue = device.makeCommandQueue()
-    let buffer: MTLCommandBuffer! = commandQueue?.makeCommandBuffer()
-    let drawable = metalLayer.nextDrawable()!
     
     // create the render pass descriptor
     let rpDesc = MTLRenderPassDescriptor()
-    rpDesc.colorAttachments[0].texture = drawable.texture
     rpDesc.colorAttachments[0].loadAction = .clear
     rpDesc.colorAttachments[0].clearColor = MTLClearColorMake(0.5, 0.5, 0.5, 1.0)
     
     // load texture
     let textureLoader = MTKTextureLoader(device: device)
-    let textureUrl = Bundle.main.url(forResource: "TV-test", withExtension: "png")!
-    let texture = try! textureLoader.newTexture(URL: textureUrl, options: nil)
+    let textimageImage: NSImage
+    if let known = image {
+        textimageImage = known
+    } else {
+        let imageUrl = Bundle.main.url(forResource: "TV-test", withExtension: "png")!
+        textimageImage = NSImage(contentsOf: imageUrl)!
+    }
+    let cgImage = textimageImage.cgImage(forProposedRect: nil, context: nil, hints: nil)!
+    let texture = try! textureLoader.newTexture(cgImage: cgImage, options: nil)
     
-    // create a buffer of actual render commands
-    let encoder = buffer.makeRenderCommandEncoder(descriptor: rpDesc)!
-    encoder.setRenderPipelineState(renderPipeline)
-    encoder.setVertexBuffer(vertexArray, offset: 0, index: 0)
-    encoder.setFragmentTexture(texture, index: textureId)
+    func renderPass(color: NSColor) {
+        // create a buffer of actual render commands
+        let buffer: MTLCommandBuffer! = commandQueue?.makeCommandBuffer()
+        let drawable = metalLayer.nextDrawable()!
+        rpDesc.colorAttachments[0].texture = drawable.texture
+
+        let encoder = buffer.makeRenderCommandEncoder(descriptor: rpDesc)!
+        encoder.setRenderPipelineState(renderPipeline)
+        encoder.setVertexBuffer(vertexArray, offset: 0, index: 0)
+        encoder.setFragmentTexture(texture, index: textureId)
+        
+        // set background color
+        var fragmentColor = vector_float4(Float(color.redComponent), Float(color.greenComponent),
+                                          Float(color.blueComponent), Float(color.alphaComponent))
+        encoder.setFragmentBytes(&fragmentColor, length: MemoryLayout.size(ofValue: fragmentColor),
+                                 index: backgroundColorId)
+        
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+        encoder.endEncoding()
+        
+        // show the buffer
+        buffer.present(drawable)
+        buffer.commit()
+    }
     
-    // set background color
-    let color = backgroundColor
-    var fragmentColor = vector_float4(Float(color.redComponent), Float(color.greenComponent),
-                                      Float(color.blueComponent), Float(color.alphaComponent))
-    encoder.setFragmentBytes(&fragmentColor, length: MemoryLayout.size(ofValue: fragmentColor), index: backgroundColorId)
+    renderPass(color: backgroundColor(0))
+
     
-    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
-    encoder.endEncoding()
-    
-    // show the buffer
-    buffer.present(drawable)
-    buffer.commit()
+    // setup timer for animations
+    var t = 0.0
+    Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { timer in
+        t += timer.timeInterval
+        if t >= 2.0 {
+            timer.invalidate()
+        }
+        
+        renderPass(color: backgroundColor(t))
+        print("Timer fired! \(t)")
+    }
 }
