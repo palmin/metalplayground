@@ -7,9 +7,9 @@ import MetalKit
 import PlaygroundSupport
 
 var options = Options()
-options.transform = { t in CGAffineTransform(scaleX: 1.0 - CGFloat(t), y: 1)}
+//options.transform = { t in CGAffineTransform(scaleX: 1.0 - CGFloat(t), y: 1)}
 
-options.fragmentShader = "constant_color"
+//options.fragmentShader = "constant_color"
 options.shaderCode = """
 fragment half4 constant_color() {
     return half4(0.95, 0.9, 0.1, 1.0);
@@ -21,12 +21,13 @@ render(options)
 //               backgroundColor: { t in NSColor(calibratedRed: CGFloat(t), green: 0, blue: 1, alpha: 1) })
 
 struct Options {
-    var fragmentShader = "background_color"
+    var fragmentShader = "sample_layer"
     var shaderCode = ""
     
     var image: NSImage? = nil
     var backgroundColor: ((Double) -> NSColor) = always(NSColor.cyan)
-    
+    var cornerRadius: ((Double) -> Float) = always(0)
+
     var transform: ((Double) -> CGAffineTransform) = always(CGAffineTransform.identity)
 }
 
@@ -40,7 +41,6 @@ func render(_ options: Options = Options()) {
     let textureId = 0
     let backgroundColorId = 1
     let cornerRadiusId = 2
-    let strokeWidthId = 3
 
     // create a shader library in source (not precompiled)
     let runtimeLibrary = try! device.makeLibrary(source: """
@@ -51,7 +51,6 @@ func render(_ options: Options = Options()) {
             Texture = 0,
             BackgroundColor = 1,
             CornerRadius = 2,
-            StrokeWidth = 3,
         };
 
         struct RasterizerData {
@@ -90,6 +89,29 @@ func render(_ options: Options = Options()) {
 
         fragment half4 sample_color(RasterizerData in [[stage_in]],
                                     texture2d<half> colorTexture [[ texture(Texture) ]]) {
+            constexpr sampler textureSampler (mag_filter::linear,
+                                              min_filter::linear);
+            const half4 colorSample = colorTexture.sample(textureSampler, in.textureCoordinate);
+            return colorSample;
+        }
+
+        fragment half4 sample_layer(RasterizerData in [[stage_in]],
+                                    constant float4 &backgroundColor [[ buffer(BackgroundColor) ]],
+                                    constant float &cornerRadius [[ buffer(CornerRadius) ]],
+                                    texture2d<half> colorTexture [[ texture(Texture) ]]) {
+            
+            // return background color when close enough to corners
+            float2 p = in.textureCoordinate;
+            if((p.x < 0.1 && p.y < 0.1) || (p.x < 0.1 && p.y > 0.9) ||
+               (p.x > 0.9 && p.y > 0.9) || (p.x > 0.9 && p.y < 0.1)) {
+                if(min(min(distance(float2(0.1, 0.1), in.textureCoordinate),
+                           distance(float2(0.1, 0.9), in.textureCoordinate)),
+                       min(distance(float2(0.9, 0.1), in.textureCoordinate),
+                           distance(float2(0.9, 0.9), in.textureCoordinate))) >= 0.05) {
+                  return half4(backgroundColor);
+                }
+            }
+
             constexpr sampler textureSampler (mag_filter::linear,
                                               min_filter::linear);
             const half4 colorSample = colorTexture.sample(textureSampler, in.textureCoordinate);
@@ -135,7 +157,7 @@ func render(_ options: Options = Options()) {
     let cgImage = textimageImage.cgImage(forProposedRect: nil, context: nil, hints: nil)!
     let texture = try! textureLoader.newTexture(cgImage: cgImage, options: nil)
     
-    func renderPass(color: NSColor, transform: CGAffineTransform) {
+    func renderPass(color: NSColor, transform: CGAffineTransform, radius: Float) {
         // calculate geometry
         let upperRight = CGPoint(x: 0.9, y: 0.9).applying(transform)
         let lowerLeft = CGPoint(x: -0.9, y: -0.9).applying(transform)
@@ -163,6 +185,11 @@ func render(_ options: Options = Options()) {
         encoder.setFragmentBytes(&fragmentColor, length: MemoryLayout.size(ofValue: fragmentColor),
                                  index: backgroundColorId)
         
+        // set corner radius
+        var cornerRadius = simd_float1(radius)
+        encoder.setFragmentBytes(&cornerRadius, length: MemoryLayout.size(ofValue: cornerRadius),
+                                 index: cornerRadiusId)
+        
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         encoder.endEncoding()
         
@@ -171,9 +198,12 @@ func render(_ options: Options = Options()) {
         buffer.commit()
     }
     
-    renderPass(color: options.backgroundColor(0),
-               transform: options.transform(0))
-
+    func renderTime(_ time: Double) {
+        renderPass(color: options.backgroundColor(time),
+                   transform: options.transform(time),
+                   radius: options.cornerRadius(time))
+    }
+    renderTime(0)
     
     // setup timer for animations
     var t = 0.0
@@ -184,9 +214,7 @@ func render(_ options: Options = Options()) {
             timer.invalidate()
         }
         
-        let time = t / maxTime
-        renderPass(color: options.backgroundColor(time),
-                   transform: options.transform(time))
+        renderTime(t / maxTime)
     }
 }
 
