@@ -6,14 +6,28 @@ import Metal
 import MetalKit
 import PlaygroundSupport
 
+var options = Options()
+options.fragmentShader = "constant_color"
+options.shaderCode = """
+fragment half4 constant_color() {
+    return half4(0.95, 0.9, 0.1, 1.0);
+}
+"""
 
-//renderPipeline(fragmentShader: "background_color")
-renderPipeline(fragmentShader: "background_color",
-               backgroundColor: { t in NSColor(calibratedRed: CGFloat(t), green: 0, blue: 1, alpha: 1) })
+render(options)
+//render(fragmentShader: "background_color",
+//               backgroundColor: { t in NSColor(calibratedRed: CGFloat(t), green: 0, blue: 1, alpha: 1) })
 
-func renderPipeline(fragmentShader: String = "constant_color",
-                    backgroundColor: @escaping ((Double) -> NSColor) = { _ in NSColor.cyan },
-                    image: NSImage? = nil) {
+struct Options {
+    var fragmentShader = "background_color"
+    var shaderCode = ""
+    
+    var image: NSImage? = nil
+    
+    var backgroundColor: ((Double) -> NSColor) = always(NSColor.cyan)
+}
+
+func render(_ options: Options = Options()) {
     // get the device
     let device = MTLCreateSystemDefaultDevice()!
 
@@ -75,10 +89,6 @@ func renderPipeline(fragmentShader: String = "constant_color",
             return out;
         }
 
-        fragment half4 constant_color() {
-            return half4(0.95, 0.9, 0.1, 1.0);
-        }
-
         fragment half4 background_color(constant float4 &color [[ buffer(BackgroundColor) ]]) {
             return half4(color);
         }
@@ -96,11 +106,11 @@ func renderPipeline(fragmentShader: String = "constant_color",
             return colorSample;
         }
 
-    """, options: nil)
+    """ + options.shaderCode, options: nil)
 
     // vertex & fragment shader
     descriptor.vertexFunction = runtimeLibrary.makeFunction(name: "copy_vertex")
-    descriptor.fragmentFunction = runtimeLibrary.makeFunction(name: fragmentShader)
+    descriptor.fragmentFunction = runtimeLibrary.makeFunction(name: options.fragmentShader)
 
     // framebuffer format
     descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
@@ -126,7 +136,7 @@ func renderPipeline(fragmentShader: String = "constant_color",
     // load texture
     let textureLoader = MTKTextureLoader(device: device)
     let textimageImage: NSImage
-    if let known = image {
+    if let known = options.image {
         textimageImage = known
     } else {
         let imageUrl = Bundle.main.url(forResource: "TV-test", withExtension: "png")!
@@ -160,18 +170,24 @@ func renderPipeline(fragmentShader: String = "constant_color",
         buffer.commit()
     }
     
-    renderPass(color: backgroundColor(0))
+    renderPass(color: options.backgroundColor(0))
 
     
     // setup timer for animations
     var t = 0.0
-    Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { timer in
+    let maxTime = 3.0
+    Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { timer in
         t += timer.timeInterval
-        if t >= 2.0 {
+        if t >= maxTime {
             timer.invalidate()
         }
         
-        renderPass(color: backgroundColor(t))
-        print("Timer fired! \(t)")
+        let time = t / maxTime
+        renderPass(color: options.backgroundColor(time))
     }
+}
+
+// function that always returns value itself for when we don't want to animate
+func always<T>(_ value: T) -> ((Double) -> T) {
+    return { _ in value }
 }
