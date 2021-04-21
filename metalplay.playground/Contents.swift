@@ -7,6 +7,8 @@ import MetalKit
 import PlaygroundSupport
 
 var options = Options()
+options.transform = { t in CGAffineTransform(scaleX: 1.0 - CGFloat(t), y: 1)}
+
 options.fragmentShader = "constant_color"
 options.shaderCode = """
 fragment half4 constant_color() {
@@ -23,26 +25,14 @@ struct Options {
     var shaderCode = ""
     
     var image: NSImage? = nil
-    
     var backgroundColor: ((Double) -> NSColor) = always(NSColor.cyan)
+    
+    var transform: ((Double) -> CGAffineTransform) = always(CGAffineTransform.identity)
 }
 
 func render(_ options: Options = Options()) {
     // get the device
     let device = MTLCreateSystemDefaultDevice()!
-
-    // create data & buffer for data source
-    let vertexData: [Float] = [
-         0.9,  0.9,
-        -0.9, -0.9,
-        -0.9,  0.9,
-
-         0.9,  0.9,
-         0.9, -0.9,
-        -0.9, -0.9,
-    ]
-    let dataSize = vertexData.count * MemoryLayout.stride(ofValue: vertexData[0]) // use stride instead of size, as this properly reflects memory usage.
-    let vertexArray = device.makeBuffer(bytes: vertexData, length: dataSize, options: [])
         
     // vertex layout descriptor
     let descriptor = MTLRenderPipelineDescriptor()
@@ -145,7 +135,18 @@ func render(_ options: Options = Options()) {
     let cgImage = textimageImage.cgImage(forProposedRect: nil, context: nil, hints: nil)!
     let texture = try! textureLoader.newTexture(cgImage: cgImage, options: nil)
     
-    func renderPass(color: NSColor) {
+    func renderPass(color: NSColor, transform: CGAffineTransform) {
+        // calculate geometry
+        let upperRight = CGPoint(x: 0.9, y: 0.9).applying(transform)
+        let lowerLeft = CGPoint(x: -0.9, y: -0.9).applying(transform)
+        let upperLeft = CGPoint(x: -0.9, y: 0.9).applying(transform)
+        let lowerRight = CGPoint(x: 0.9, y: -0.9).applying(transform)
+
+        let vertexData = [upperRight, lowerLeft, upperLeft,
+                          upperRight, lowerRight, lowerLeft].vertexData()
+        let dataSize = vertexData.count * MemoryLayout.stride(ofValue: vertexData[0]) // use stride instead of size, as this properly reflects memory usage.
+        let vertexArray = device.makeBuffer(bytes: vertexData, length: dataSize, options: [])
+        
         // create a buffer of actual render commands
         let buffer: MTLCommandBuffer! = commandQueue?.makeCommandBuffer()
         let drawable = metalLayer.nextDrawable()!
@@ -170,7 +171,8 @@ func render(_ options: Options = Options()) {
         buffer.commit()
     }
     
-    renderPass(color: options.backgroundColor(0))
+    renderPass(color: options.backgroundColor(0),
+               transform: options.transform(0))
 
     
     // setup timer for animations
@@ -183,11 +185,18 @@ func render(_ options: Options = Options()) {
         }
         
         let time = t / maxTime
-        renderPass(color: options.backgroundColor(time))
+        renderPass(color: options.backgroundColor(time),
+                   transform: options.transform(time))
     }
 }
 
 // function that always returns value itself for when we don't want to animate
 func always<T>(_ value: T) -> ((Double) -> T) {
     return { _ in value }
+}
+
+extension Array where Array.Element == CGPoint  {
+    func vertexData() -> [Float] {
+        return [Float](map({ [Float($0.x), Float($0.y)] }).joined())
+    }
 }
