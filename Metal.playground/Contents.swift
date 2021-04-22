@@ -7,46 +7,50 @@ import MetalKit
 import PlaygroundSupport
 
 var options = Options()
-//options.transform = { t in CGAffineTransform(scaleX: 1.0 - CGFloat(t), y: 1)}
-
-options.cornerRadius = { t in Float(200.0 * t)}
-options.shaderCode = """
-fragment half4 constant_color() {
-    return half4(0.95, 0.9, 0.1, 1.0);
-}
-"""
-
 render(options)
-//render(fragmentShader: "background_color",
-//               backgroundColor: { t in NSColor(calibratedRed: CGFloat(t), green: 0, blue: 1, alpha: 1) })
+
+
 
 struct Options {
-    var fragmentShader = "sample_layer"
-    var shaderCode = ""
-    
     var image: NSImage? = nil
     var backgroundColor: ((Double) -> NSColor) = always(NSColor.cyan)
     var cornerRadius: ((Double) -> Float) = always(0)
 
     var transform: ((Double) -> CGAffineTransform) = always(CGAffineTransform.identity)
+    
+    var origin: CGPoint {
+        get { .zero }
+        set {
+            let tx = 2.0 * newValue.x / Options.viewLength
+            let ty = -2.0 * newValue.y / Options.viewLength
+            transform = always(CGAffineTransform(translationX: tx, y: ty))
+        }
+    }
+
+    // must contain function defition for fragment_shader()
+    var fragmentShaderFunction = """
+fragment half4 fragment_shader() {
+    return half4(0, 0, 0, 1.0);
+}
+"""
+
+    static let viewLength = CGFloat(400)
 }
 
 func render(_ options: Options = Options()) {
-    // get the device
-    let device = MTLCreateSystemDefaultDevice()!
-        
-    // vertex layout descriptor
-    let descriptor = MTLRenderPipelineDescriptor()
     
+    // variables set from outside regular code are integer based
     let textureId = 0
     let backgroundColorId = 1
     let cornerRadiusId = 2
 
     // create a shader library in source (not precompiled)
+    let device = MTLCreateSystemDefaultDevice()!
     let runtimeLibrary = try! device.makeLibrary(source: """
         #include <metal_stdlib>
         using namespace metal;
 
+        // variables set from outside regular code are integer based
         enum {
             Texture = 0,
             BackgroundColor = 1,
@@ -56,13 +60,10 @@ func render(_ options: Options = Options()) {
         struct RasterizerData {
             // The [[position]] attribute qualifier of this member indicates this value is
             // the clip space position of the vertex when this structure is returned from
-            // the vertex shader
+            // the vertex shader. Coordinates go from -1.0 to +1.0.
             float4 position [[position]];
 
-            // Since this member does not have a special attribute qualifier, the rasterizer
-            // will interpolate its value with values of other vertices making up the triangle
-            // and pass that interpolated value to the fragment shader for each fragment in
-            // that triangle.
+            // Texture coordinates go from 0.0 to 1.0
             float2 textureCoordinate;
         };
 
@@ -77,52 +78,14 @@ func render(_ options: Options = Options()) {
                                            0.5 - 0.5 * where[3]);
             return out;
         }
-
-        fragment half4 background_color(constant float4 &color [[ buffer(BackgroundColor) ]]) {
-            return half4(color);
-        }
-
-        fragment half4 gradient_color(RasterizerData in [[stage_in]]) {
-            return half4(in.textureCoordinate.x,
-                         in.textureCoordinate.y, 0.05, 1.0);
-        }
-
-        fragment half4 sample_color(RasterizerData in [[stage_in]],
-                                    texture2d<half> colorTexture [[ texture(Texture) ]]) {
-            constexpr sampler textureSampler (mag_filter::linear,
-                                              min_filter::linear);
-            const half4 colorSample = colorTexture.sample(textureSampler, in.textureCoordinate);
-            return colorSample;
-        }
-
-        fragment half4 sample_layer(RasterizerData in [[stage_in]],
-                                    constant float4 &backgroundColor [[ buffer(BackgroundColor) ]],
-                                    constant float &cornerRadius [[ buffer(CornerRadius) ]],
-                                    texture2d<half> colorTexture [[ texture(Texture) ]]) {
+    """ + options.fragmentShaderFunction, options: nil)
             
-            // return background color when close enough to corners
-            float2 p = in.textureCoordinate;
-            float r = cornerRadius;
-            float s = 1.0 - r;
-            if((p.x < r && p.y < r) || (p.x < r && p.y > s) ||
-               (p.x > s && p.y > s) || (p.x > s && p.y < r)) {
-                if(min(min(distance(float2(r, r), p), distance(float2(r, s), p)),
-                       min(distance(float2(s, r), p), distance(float2(s, s), p))) >= r) {
-                  return half4(backgroundColor);
-                }
-            }
-
-            constexpr sampler textureSampler (mag_filter::linear,
-                                              min_filter::linear);
-            const half4 colorSample = colorTexture.sample(textureSampler, p);
-            return colorSample;
-        }
-
-    """ + options.shaderCode, options: nil)
+    // vertex layout descriptor
+    let descriptor = MTLRenderPipelineDescriptor()
 
     // vertex & fragment shader
     descriptor.vertexFunction = runtimeLibrary.makeFunction(name: "copy_vertex")
-    descriptor.fragmentFunction = runtimeLibrary.makeFunction(name: options.fragmentShader)
+    descriptor.fragmentFunction = runtimeLibrary.makeFunction(name: "fragment_shader")
 
     // framebuffer format
     descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
@@ -133,20 +96,20 @@ func render(_ options: Options = Options()) {
     // create an NSView, with a metal layer as its backing layer.
     let metalLayer = CAMetalLayer()
     metalLayer.device = device
-    let viewLength = CGFloat(400)
-    let view = NSView(frame: NSRect(x: 0, y: 0, width: viewLength, height: viewLength))
+    let length = Options.viewLength
+    let view = NSView(frame: NSRect(x: 0, y: 0, width: length, height: length))
     view.layer = metalLayer
     PlaygroundPage.current.liveView = view
 
     // prepare our command buffer and drawable
     let commandQueue = device.makeCommandQueue()
     
-    // create the render pass descriptor
+    // create the render pass descriptor that starts by clearing with gray
     let rpDesc = MTLRenderPassDescriptor()
     rpDesc.colorAttachments[0].loadAction = .clear
     rpDesc.colorAttachments[0].clearColor = MTLClearColorMake(0.5, 0.5, 0.5, 1.0)
     
-    // load texture
+    // load texture from Options or bundle
     let textureLoader = MTKTextureLoader(device: device)
     let textimageImage: NSImage
     if let known = options.image {
@@ -158,6 +121,8 @@ func render(_ options: Options = Options()) {
     let cgImage = textimageImage.cgImage(forProposedRect: nil, context: nil, hints: nil)!
     let texture = try! textureLoader.newTexture(cgImage: cgImage, options: nil)
     
+    // everything above this step is reused for all frames, and everything below
+    // is done for each frame
     func renderPass(color: NSColor, transform: CGAffineTransform, radius: Float) {
         // calculate geometry
         let upperRight = CGPoint(x: 1.0, y:  1.0)
@@ -167,10 +132,12 @@ func render(_ options: Options = Options()) {
 
         let vertexData = [upperRight, lowerLeft, upperLeft,
                           upperRight, lowerRight, lowerLeft].vertexData(transform)
-        let dataSize = vertexData.count * MemoryLayout.stride(ofValue: vertexData[0]) // use stride instead of size, as this properly reflects memory usage.
+        
+        // use stride instead of size, as this properly reflects memory usage.
+        let dataSize = vertexData.count * MemoryLayout.stride(ofValue: vertexData[0])
         let vertexArray = device.makeBuffer(bytes: vertexData, length: dataSize, options: [])
         
-        // create a buffer of actual render commands
+        // create a buffer of render commands
         let buffer: MTLCommandBuffer! = commandQueue?.makeCommandBuffer()
         let drawable = metalLayer.nextDrawable()!
         rpDesc.colorAttachments[0].texture = drawable.texture
@@ -187,10 +154,11 @@ func render(_ options: Options = Options()) {
                                  index: backgroundColorId)
         
         // set corner radius, where we cheat a little since size never changes
-        var cornerRadius = simd_float1(radius / Float(viewLength))
+        var cornerRadius = simd_float1(radius / Float(Options.viewLength))
         encoder.setFragmentBytes(&cornerRadius, length: MemoryLayout.size(ofValue: cornerRadius),
                                  index: cornerRadiusId)
         
+        // we are ready to draw
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         encoder.endEncoding()
         
@@ -199,14 +167,18 @@ func render(_ options: Options = Options()) {
         buffer.commit()
     }
     
+    // to illustrate animations we make the render parameters time-based
     func renderTime(_ time: Double) {
         renderPass(color: options.backgroundColor(time),
                    transform: options.transform(time),
                    radius: options.cornerRadius(time))
     }
+    
+    // render first frame
     renderTime(0)
     
-    // setup timer for animations
+    // Setup timer for frame updates. A real implementation would use screen-synced rendering
+    // instead of purely time-based rendering
     var t = 0.0
     let maxTime = 2.0
     Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { timer in
@@ -225,6 +197,8 @@ func always<T>(_ value: T) -> ((Double) -> T) {
 }
 
 extension Array where Array.Element == CGPoint  {
+    // help produce 4 Floats per Point for both geometry coordinates and
+    // texture coordinates
     func vertexData(_ transform: CGAffineTransform) -> [Float] {
         var result = [Float]()
         for point in self {
