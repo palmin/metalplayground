@@ -7,26 +7,30 @@ import MetalKit
 import PlaygroundSupport
 
 var options = Options()
+options.setOrigin(CGPoint(x: 100, y: 50))
+options.fragmentShaderFunction = """
+    fragment half4 fragment_shader(RasterizerData in [[stage_in]],
+                                        texture2d<half> colorTexture [[ texture(Texture) ]]) {
+                constexpr sampler textureSampler (mag_filter::linear,
+                                                  min_filter::linear);
+                const half4 colorSample = colorTexture.sample(textureSampler, in.textureCoordinate);
+                return colorSample;
+            }
+
+"""
+options.scalar = { time in 0.5 * time }
+options.color = { time in NSColor(red: CGFloat(1.0 - time), green: CGFloat(time),
+                                  blue: 1, alpha: 1)}
+
 render(options)
 
-
-
 struct Options {
-    var image: NSImage? = nil
-    var backgroundColor: ((Double) -> NSColor) = always(NSColor.cyan)
-    var cornerRadius: ((Double) -> Float) = always(0)
+    var texture: NSImage? = nil
+    var color: ((Double) -> NSColor) = always(NSColor.cyan)
+    var scalar: ((Double) -> Double) = always(0)
 
     var transform: ((Double) -> CGAffineTransform) = always(CGAffineTransform.identity)
     
-    var origin: CGPoint {
-        get { .zero }
-        set {
-            let tx = 2.0 * newValue.x / Options.viewLength
-            let ty = -2.0 * newValue.y / Options.viewLength
-            transform = always(CGAffineTransform(translationX: tx, y: ty))
-        }
-    }
-
     // must contain function defition for fragment_shader()
     var fragmentShaderFunction = """
 fragment half4 fragment_shader() {
@@ -34,15 +38,15 @@ fragment half4 fragment_shader() {
 }
 """
 
-    static let viewLength = CGFloat(400)
+    static let viewLength = 400.0
 }
 
 func render(_ options: Options = Options()) {
     
     // variables set from outside regular code are integer based
     let textureId = 0
-    let backgroundColorId = 1
-    let cornerRadiusId = 2
+    let colorId = 1
+    let scalarId = 2
 
     // create a shader library in source (not precompiled)
     let device = MTLCreateSystemDefaultDevice()!
@@ -53,8 +57,8 @@ func render(_ options: Options = Options()) {
         // variables set from outside regular code are integer based
         enum {
             Texture = 0,
-            BackgroundColor = 1,
-            CornerRadius = 2,
+            Color = 1,
+            Scalar = 2,
         };
 
         struct RasterizerData {
@@ -74,8 +78,7 @@ func render(_ options: Options = Options()) {
             RasterizerData out;
             const float4 where = vertex_array[vid];
             out.position = float4(where[0], where[1], 0.0, 1.0);
-            out.textureCoordinate = float2(0.5 + 0.5 * where[2],
-                                           0.5 - 0.5 * where[3]);
+            out.textureCoordinate = float2(where[2], where[3]);
             return out;
         }
     """ + options.fragmentShaderFunction, options: nil)
@@ -112,7 +115,7 @@ func render(_ options: Options = Options()) {
     // load texture from Options or bundle
     let textureLoader = MTKTextureLoader(device: device)
     let textimageImage: NSImage
-    if let known = options.image {
+    if let known = options.texture {
         textimageImage = known
     } else {
         let imageUrl = Bundle.main.url(forResource: "TV-test", withExtension: "png")!
@@ -123,7 +126,7 @@ func render(_ options: Options = Options()) {
     
     // everything above this step is reused for all frames, and everything below
     // is done for each frame
-    func renderPass(color: NSColor, transform: CGAffineTransform, radius: Float) {
+    func renderPass(color: NSColor, transform: CGAffineTransform, scalar: Double) {
         // calculate geometry
         let upperRight = CGPoint(x: 1.0, y:  1.0)
         let lowerLeft = CGPoint(x: -1.0, y: -1.0)
@@ -151,12 +154,12 @@ func render(_ options: Options = Options()) {
         var fragmentColor = vector_float4(Float(color.redComponent), Float(color.greenComponent),
                                           Float(color.blueComponent), Float(color.alphaComponent))
         encoder.setFragmentBytes(&fragmentColor, length: MemoryLayout.size(ofValue: fragmentColor),
-                                 index: backgroundColorId)
+                                 index: colorId)
         
         // set corner radius, where we cheat a little since size never changes
-        var cornerRadius = simd_float1(radius / Float(Options.viewLength))
-        encoder.setFragmentBytes(&cornerRadius, length: MemoryLayout.size(ofValue: cornerRadius),
-                                 index: cornerRadiusId)
+        var simdScalar = simd_float1(scalar)
+        encoder.setFragmentBytes(&simdScalar, length: MemoryLayout.size(ofValue: simdScalar),
+                                 index: scalarId)
         
         // we are ready to draw
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
@@ -169,9 +172,9 @@ func render(_ options: Options = Options()) {
     
     // to illustrate animations we make the render parameters time-based
     func renderTime(_ time: Double) {
-        renderPass(color: options.backgroundColor(time),
+        renderPass(color: options.color(time),
                    transform: options.transform(time),
-                   radius: options.cornerRadius(time))
+                   scalar: options.scalar(time))
     }
     
     // render first frame
@@ -196,6 +199,15 @@ func always<T>(_ value: T) -> ((Double) -> T) {
     return { _ in value }
 }
 
+extension Options {
+    // set transform to enforce this origin for entire render
+    mutating func setOrigin(_ origin: CGPoint) {
+        let tx = 2.0 * origin.x / CGFloat(Options.viewLength)
+        let ty = -2.0 * origin.y / CGFloat(Options.viewLength)
+        transform = always(CGAffineTransform(translationX: tx, y: ty))
+    }
+}
+
 extension Array where Array.Element == CGPoint  {
     // help produce 4 Floats per Point for both geometry coordinates and
     // texture coordinates
@@ -205,8 +217,11 @@ extension Array where Array.Element == CGPoint  {
             let transformed = point.applying(transform)
             result.append(Float(transformed.x))
             result.append(Float(transformed.y))
-            result.append(Float(point.x))
-            result.append(Float(point.y))
+   
+            // geometry coordinates go from -1 to +1 but texture
+            // coordinates from from 0.0 to 1.0
+            result.append(Float(0.5 + 0.5 * point.x))
+            result.append(Float(0.5 - 0.5 * point.y))
         }
         return result
     }
