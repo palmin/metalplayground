@@ -2,5 +2,10 @@
 <Timeline
    version = "3.0">
    <TimelineItems>
+      <LoggerValueHistoryTimelineItem
+         documentLocation = "file:///Users/ander/opgaver/OneDrive/talk/Metal.playground#CharacterRangeLen=7&amp;CharacterRangeLoc=10512&amp;EndingColumnNumber=25&amp;EndingLineNumber=260&amp;StartingColumnNumber=18&amp;StartingLineNumber=260&amp;Timestamp=641221447.1499161"
+         selectedRepresentationIndex = "0"
+         shouldTrackSuperviewWidth = "NO">
+      </LoggerValueHistoryTimelineItem>
    </TimelineItems>
 </Timeline>

@@ -7,34 +7,51 @@ import MetalKit
 import PlaygroundSupport
 
 var options = Options()
-options.setOrigin(CGPoint(x: 100, y: 50))
+options.color = always(NSColor.yellow)
+options.scalar = always(0.1)
 options.fragmentShaderFunction = """
-    fragment half4 fragment_shader(RasterizerData in [[stage_in]],
-                                        texture2d<half> colorTexture [[ texture(Texture) ]]) {
-                constexpr sampler textureSampler (mag_filter::linear,
-                                                  min_filter::linear);
-                const half4 colorSample = colorTexture.sample(textureSampler, in.textureCoordinate);
-                return colorSample;
+fragment half4 fragment_shader(RasterizerData in [[stage_in]],
+                                    constant float4 &backgroundColor [[ buffer(Color) ]],
+                                    constant float &cornerRadius [[ buffer(Scalar) ]],
+                                    texture2d<half> colorTexture [[ texture(Texture) ]]) {
+            
+            // return background color when close enough to corners
+            float2 p = in.textureCoordinate;
+            float r = cornerRadius;
+            float s = 1.0 - r;
+            if((p.x < r && p.y < r) || (p.x < r && p.y > s) ||
+               (p.x > s && p.y > s) || (p.x > s && p.y < r)) {
+                if(min(min(distance(float2(r, r), p), distance(float2(r, s), p)),
+                       min(distance(float2(s, r), p), distance(float2(s, s), p))) >= r) {
+                  return half4(backgroundColor);
+                }
             }
 
+            constexpr sampler textureSampler (mag_filter::linear,
+                                              min_filter::linear);
+            const half4 colorSample = colorTexture.sample(textureSampler, p);
+            return colorSample;
+        }
 """
-options.scalar = { time in 0.5 * time }
-options.color = { time in NSColor(red: CGFloat(1.0 - time), green: CGFloat(time),
-                                  blue: 1, alpha: 1)}
-
+options.draw { context, rect in
+    context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+    context.fill(rect)
+}
 render(options)
 
 struct Options {
+    var frame: ((Double) -> CGRect) = always(CGRect(x: 50, y: 50,
+                                                    width: 300, height: 300))
+    var transform: ((Double) -> CGAffineTransform) = always(CGAffineTransform.identity)
+
     var texture: NSImage? = nil
     var color: ((Double) -> NSColor) = always(NSColor.cyan)
     var scalar: ((Double) -> Double) = always(0)
-
-    var transform: ((Double) -> CGAffineTransform) = always(CGAffineTransform.identity)
     
     // must contain function defition for fragment_shader()
     var fragmentShaderFunction = """
 fragment half4 fragment_shader() {
-    return half4(0, 0, 0, 1.0);
+    return half4(0.0, 0.0, 0.0, 1.0);
 }
 """
 
@@ -47,9 +64,11 @@ func render(_ options: Options = Options()) {
     let textureId = 0
     let colorId = 1
     let scalarId = 2
+    
+    // get handle to GPU device
+    let device = MTLCreateSystemDefaultDevice()!
 
     // create a shader library in source (not precompiled)
-    let device = MTLCreateSystemDefaultDevice()!
     let runtimeLibrary = try! device.makeLibrary(source: """
         #include <metal_stdlib>
         using namespace metal;
@@ -83,15 +102,11 @@ func render(_ options: Options = Options()) {
         }
     """ + options.fragmentShaderFunction, options: nil)
             
-    // vertex layout descriptor
+    // configure pipeline
     let descriptor = MTLRenderPipelineDescriptor()
-
-    // vertex & fragment shader
     descriptor.vertexFunction = runtimeLibrary.makeFunction(name: "copy_vertex")
     descriptor.fragmentFunction = runtimeLibrary.makeFunction(name: "fragment_shader")
-
-    // framebuffer format
-    descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+    descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm // framebuffer format
 
     // compile to MTLPRenderPipelineState
     let renderPipeline = try! device.makeRenderPipelineState(descriptor: descriptor)
@@ -102,6 +117,8 @@ func render(_ options: Options = Options()) {
     let length = Options.viewLength
     let view = NSView(frame: NSRect(x: 0, y: 0, width: length, height: length))
     view.layer = metalLayer
+    
+    // wire up metal view to playground
     PlaygroundPage.current.liveView = view
 
     // prepare our command buffer and drawable
@@ -110,7 +127,7 @@ func render(_ options: Options = Options()) {
     // create the render pass descriptor that starts by clearing with gray
     let rpDesc = MTLRenderPassDescriptor()
     rpDesc.colorAttachments[0].loadAction = .clear
-    rpDesc.colorAttachments[0].clearColor = MTLClearColorMake(0.5, 0.5, 0.5, 1.0)
+    rpDesc.colorAttachments[0].clearColor = MTLClearColorMake(0.75, 0.75, 0.75, 1.0)
     
     // load texture from Options or bundle
     let textureLoader = MTKTextureLoader(device: device)
@@ -126,15 +143,35 @@ func render(_ options: Options = Options()) {
     
     // everything above this step is reused for all frames, and everything below
     // is done for each frame
-    func renderPass(color: NSColor, transform: CGAffineTransform, scalar: Double) {
-        // calculate geometry
-        let upperRight = CGPoint(x: 1.0, y:  1.0)
-        let lowerLeft = CGPoint(x: -1.0, y: -1.0)
-        let upperLeft = CGPoint(x: -1.0, y:  1.0)
-        let lowerRight = CGPoint(x: 1.0, y: -1.0)
+    func renderPass(frame: CGRect,
+                    transform: CGAffineTransform,
+                    color: NSColor,
+                    scalar: Double) {
+        // geometry coordinates go from -1 to +1
+        let x1 = 2.0 * Double(frame.minX) / Options.viewLength - 1.0
+        let x2 = 2.0 * Double(frame.maxX) / Options.viewLength - 1.0
+        let y1 = 2.0 * Double(frame.minY) / Options.viewLength - 1.0
+        let y2 = 2.0 * Double(frame.maxY) / Options.viewLength - 1.0
+        let upperRight = CGPoint(x: x2, y:  y2)
+        let lowerLeft = CGPoint(x: x1, y: y1)
+        let upperLeft = CGPoint(x: x1, y:  y2)
+        let lowerRight = CGPoint(x: x2, y: y1)
 
-        let vertexData = [upperRight, lowerLeft, upperLeft,
-                          upperRight, lowerRight, lowerLeft].vertexData(transform)
+        // texture coordinates
+        let textureUpperRight = CGPoint(x: 1, y: 0)
+        let textureLowerLeft = CGPoint(x: 0, y: 1)
+        let textureUpperLeft = CGPoint(x: 0, y: 0)
+        let textureLowerRight = CGPoint(x: 1, y: 1)
+        
+        // mix geometry coordinates (transformed) and
+        // texture coordinates (untransformed) in one shared array
+        let vertexData = [upperRight, textureUpperRight,
+                          lowerLeft, textureLowerLeft,
+                          upperLeft, textureUpperLeft,
+                          
+                          upperRight, textureUpperRight,
+                          lowerRight, textureLowerRight,
+                          lowerLeft, textureLowerLeft].vertexData(transform)
         
         // use stride instead of size, as this properly reflects memory usage.
         let dataSize = vertexData.count * MemoryLayout.stride(ofValue: vertexData[0])
@@ -145,43 +182,47 @@ func render(_ options: Options = Options()) {
         let drawable = metalLayer.nextDrawable()!
         rpDesc.colorAttachments[0].texture = drawable.texture
 
+        // we feed the encoder with data
         let encoder = buffer.makeRenderCommandEncoder(descriptor: rpDesc)!
         encoder.setRenderPipelineState(renderPipeline)
         encoder.setVertexBuffer(vertexArray, offset: 0, index: 0)
+        
+        // set texture argument
         encoder.setFragmentTexture(texture, index: textureId)
         
-        // set background color
+        // set color argument
         var fragmentColor = vector_float4(Float(color.redComponent), Float(color.greenComponent),
                                           Float(color.blueComponent), Float(color.alphaComponent))
         encoder.setFragmentBytes(&fragmentColor, length: MemoryLayout.size(ofValue: fragmentColor),
                                  index: colorId)
         
-        // set corner radius, where we cheat a little since size never changes
+        // set scalar argument
         var simdScalar = simd_float1(scalar)
         encoder.setFragmentBytes(&simdScalar, length: MemoryLayout.size(ofValue: simdScalar),
                                  index: scalarId)
         
-        // we are ready to draw
+        // we are ready to draw our 6 / 3 = 2 triangles
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
-        encoder.endEncoding()
         
         // show the buffer
+        encoder.endEncoding()
         buffer.present(drawable)
         buffer.commit()
     }
     
     // to illustrate animations we make the render parameters time-based
     func renderTime(_ time: Double) {
-        renderPass(color: options.color(time),
+        renderPass(frame: options.frame(time),
                    transform: options.transform(time),
+                   color: options.color(time),
                    scalar: options.scalar(time))
     }
     
     // render first frame
     renderTime(0)
     
-    // Setup timer for frame updates. A real implementation would use screen-synced rendering
-    // instead of purely time-based rendering
+    // Setup timer for frame updates. A real implementation would use screen-synced
+    // rendering instead of purely time-based rendering
     var t = 0.0
     let maxTime = 2.0
     Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { timer in
@@ -200,28 +241,44 @@ func always<T>(_ value: T) -> ((Double) -> T) {
 }
 
 extension Options {
-    // set transform to enforce this origin for entire render
-    mutating func setOrigin(_ origin: CGPoint) {
-        let tx = 2.0 * origin.x / CGFloat(Options.viewLength)
-        let ty = -2.0 * origin.y / CGFloat(Options.viewLength)
-        transform = always(CGAffineTransform(translationX: tx, y: ty))
+    // call the draw method setting image
+    mutating func draw(_ drawingHandler: @escaping ((CGContext, CGRect) -> Void)) {
+        
+        // Create a bitmap graphics context of the given size
+        let colorSpace = CGColorSpaceCreateDeviceRGB();
+        let len = Int(Options.viewLength)
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+        let context = CGContext(data: nil, width: len, height: len,
+                                bitsPerComponent: 8, bytesPerRow: 0,
+                                space: colorSpace, bitmapInfo: bitmapInfo)!
+
+        // draw into contect
+        let rect = CGRect(x: 0, y: 0, width: len, height: len)
+        drawingHandler(context, rect)
+         
+        // create image from context
+        let size = NSSize(width: len, height: len)
+        texture = NSImage(cgImage: context.makeImage()!, size: size)
     }
 }
 
 extension Array where Array.Element == CGPoint  {
-    // help produce 4 Floats per Point for both geometry coordinates and
-    // texture coordinates
+    // help produce 4 Floats per Point for both geometry coordinates (even points) and
+    // texture coordinates (odd points) where only odd ones are transformed
     func vertexData(_ transform: CGAffineTransform) -> [Float] {
         var result = [Float]()
+        var index = 0
         for point in self {
-            let transformed = point.applying(transform)
-            result.append(Float(transformed.x))
-            result.append(Float(transformed.y))
-   
-            // geometry coordinates go from -1 to +1 but texture
-            // coordinates from from 0.0 to 1.0
-            result.append(Float(0.5 + 0.5 * point.x))
-            result.append(Float(0.5 - 0.5 * point.y))
+            if index % 2 == 0 {
+                let transformed = point.applying(transform)
+                result.append(Float(transformed.x))
+                result.append(Float(transformed.y))
+            } else {
+                result.append(Float(point.x))
+                result.append(Float(point.y))
+            }
+            
+            index += 1
         }
         return result
     }

@@ -12,9 +12,9 @@ class MyViewController : UIViewController {
     
     override func loadView() {
         let view = UIView()
-        view.backgroundColor = .white
+        view.backgroundColor = .init(white: 0.75, alpha: 1)
 
-        block.backgroundColor = UIColor.clear
+        block.backgroundColor = UIColor.red
         block.frame = CGRect(x: 135, y: 150, width: 120, height: 120)
         block.layer.masksToBounds = true
         view.addSubview(block)
@@ -22,10 +22,10 @@ class MyViewController : UIViewController {
         label.frame = CGRect(x: 150, y: 200, width: 200, height: 20)
         label.text = "Hello World!"
         label.textColor = .black
-        view.addSubview(label)
+        //view.addSubview(label)
 
         gradient.frame = CGRect(x: 100, y: 300, width: 200, height: 200)
-        view.addSubview(gradient)
+        //view.addSubview(gradient)
 
         self.view = view
     }
@@ -34,23 +34,19 @@ class MyViewController : UIViewController {
         super.viewDidAppear(animated)
 
         view.layer.contents
-        label.layer.contents
         block.layer.contents
+        label.layer.contents
         gradient.layer.contents
         
-        //UIView.animate(withDuration: 2.0, animations: {
-        //    self.block.transform = CGAffineTransform(scaleX: 0.01, y: 1)
-        //})
-        block.animateTransform()
-        gradient.animateCornerRadius()
+        block.animateCornerRadius()
     }
 }
 
 class Block: UIView {
-    override func draw(_ rect: CGRect) {
-        UIColor.red.setFill()
-        UIBezierPath(rect: bounds).fill()
-    }
+//     override func draw(_ rect: CGRect) {
+//         UIColor.red.setFill()
+//         UIBezierPath(rect: rect).fill()
+//     }
 }
 
 class Gradient: UIView {
@@ -72,8 +68,9 @@ class Gradient: UIView {
 
 extension UIView {
     func animateTransform() {
-        // 3D version of CGAffineTransform(scaleX: 0.01, y: 1)
-        let destTransform = CATransform3D(m11: 0.01, m12: 0, m13: 0, m14: 0,
+        let s = CGFloat(0.01)
+        // 3D version of CGAffineTransform(scaleX: s, y: 1)
+        let destTransform = CATransform3D(m11: s, m12: 0, m13: 0, m14: 0,
                                           m21: 0, m22: 1, m23: 0, m24: 0,
                                           m31: 0, m32: 0, m33: 1, m34: 0,
                                           m41: 0, m42: 0, m43: 0, m44: 1)
